@@ -1,8 +1,11 @@
 package com.aurelhubert.ahbottomnavigation;
 
 import android.animation.Animator;
+import android.annotation.SuppressLint;
+import android.annotation.TargetApi;
 import android.content.Context;
 import android.content.res.Resources;
+import android.content.res.TypedArray;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
@@ -11,18 +14,23 @@ import android.os.Bundle;
 import android.os.Parcelable;
 import android.support.annotation.ColorInt;
 import android.support.annotation.ColorRes;
+import android.support.annotation.DrawableRes;
 import android.support.design.widget.CoordinatorLayout;
+import android.support.design.widget.FloatingActionButton;
 import android.support.v4.content.ContextCompat;
 import android.support.v4.view.ViewCompat;
 import android.support.v4.view.animation.LinearOutSlowInInterpolator;
 import android.util.AttributeSet;
+import android.util.DisplayMetrics;
 import android.util.Log;
 import android.util.TypedValue;
+import android.view.Display;
 import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewAnimationUtils;
 import android.view.ViewGroup;
+import android.view.WindowManager;
 import android.view.animation.AccelerateInterpolator;
 import android.view.animation.OvershootInterpolator;
 import android.widget.FrameLayout;
@@ -30,8 +38,12 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import com.aurelhubert.ahbottomnavigation.notification.AHNotification;
+import com.aurelhubert.ahbottomnavigation.notification.AHNotificationHelper;
+
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * AHBottomNavigationLayout
@@ -43,8 +55,16 @@ public class AHBottomNavigation extends FrameLayout {
 	public static final int CURRENT_ITEM_NONE = -1;
 	public static final int UPDATE_ALL_NOTIFICATIONS = -1;
 
+	// Title state
+	public enum TitleState {
+		SHOW_WHEN_ACTIVE,
+		ALWAYS_SHOW,
+		ALWAYS_HIDE
+	}
+
 	// Static
 	private static String TAG = "AHBottomNavigation";
+    private static final String EXCEPTION_INDEX_OUT_OF_BOUNDS = "The position (%d) is out of bounds of the items (%d elements)";
 	private static final int MIN_ITEMS = 3;
 	private static final int MAX_ITEMS = 5;
 
@@ -58,10 +78,14 @@ public class AHBottomNavigation extends FrameLayout {
 	private ArrayList<AHBottomNavigationItem> items = new ArrayList<>();
 	private ArrayList<View> views = new ArrayList<>();
 	private AHBottomNavigationBehavior<AHBottomNavigation> bottomNavigationBehavior;
+	private LinearLayout linearLayoutContainer;
 	private View backgroundColorView;
 	private Animator circleRevealAnim;
 	private boolean colored = false;
-	private String[] notifications = {"", "", "", "", ""};
+	private boolean selectedBackgroundVisible = false;
+	private boolean translucentNavigationEnabled;
+	private boolean isHidden = false;
+	private List<AHNotification> notifications = AHNotification.generateEmptyList(MAX_ITEMS);
 	private boolean isBehaviorTranslationSet = false;
 	private int currentItem = 0;
 	private int currentColor = 0;
@@ -72,37 +96,22 @@ public class AHBottomNavigation extends FrameLayout {
 	// Variables (Styles)
 	private Typeface titleTypeface;
 	private int defaultBackgroundColor = Color.WHITE;
-	private
-	@ColorInt
-	int itemActiveColor;
-	private
-	@ColorInt
-	int itemInactiveColor;
-	private
-	@ColorInt
-	int titleColorActive;
-	private
-	@ColorInt
-	int titleColorInactive;
-	private
-	@ColorInt
-	int coloredTitleColorActive;
-	private
-	@ColorInt
-	int coloredTitleColorInactive;
+	private int defaultBackgroundResource = 0;
+	private @ColorInt int itemActiveColor;
+	private @ColorInt int itemInactiveColor;
+	private @ColorInt int titleColorActive;
+	private @ColorInt int titleColorInactive;
+	private @ColorInt int coloredTitleColorActive;
+	private @ColorInt int coloredTitleColorInactive;
 	private float titleActiveTextSize, titleInactiveTextSize;
-	private int bottomNavigationHeight;
+	private int bottomNavigationHeight, navigationBarHeight = 0;
 	private float selectedItemWidth, notSelectedItemWidth;
 	private boolean forceTint = false;
-	private boolean forceTitlesDisplay = false;
+	private TitleState titleState = TitleState.SHOW_WHEN_ACTIVE;
 
 	// Notifications
-	private
-	@ColorInt
-	int notificationTextColor;
-	private
-	@ColorInt
-	int notificationBackgroundColor;
+	private @ColorInt int notificationTextColor;
+	private @ColorInt int notificationBackgroundColor;
 	private Drawable notificationBackgroundDrawable;
 	private Typeface notificationTypeface;
 	private int notificationActiveMarginLeft, notificationInactiveMarginLeft;
@@ -113,17 +122,17 @@ public class AHBottomNavigation extends FrameLayout {
 	 */
 	public AHBottomNavigation(Context context) {
 		super(context);
-		init(context);
+		init(context, null);
 	}
 
 	public AHBottomNavigation(Context context, AttributeSet attrs) {
 		super(context, attrs);
-		init(context);
+		init(context, attrs);
 	}
 
 	public AHBottomNavigation(Context context, AttributeSet attrs, int defStyleAttr) {
 		super(context, attrs, defStyleAttr);
-		init(context);
+		init(context, attrs);
 	}
 
 	@Override
@@ -147,7 +156,7 @@ public class AHBottomNavigation extends FrameLayout {
 		Bundle bundle = new Bundle();
 		bundle.putParcelable("superState", super.onSaveInstanceState());
 		bundle.putInt("current_item", currentItem);
-		bundle.putStringArray("notifications", notifications);
+        bundle.putParcelableArrayList("notifications", new ArrayList<> (notifications));
 		return bundle;
 	}
 
@@ -156,7 +165,7 @@ public class AHBottomNavigation extends FrameLayout {
 		if (state instanceof Bundle) {
 			Bundle bundle = (Bundle) state;
 			currentItem = bundle.getInt("current_item");
-			notifications = bundle.getStringArray("notifications");
+            notifications = bundle.getParcelableArrayList("notifications");
 			state = bundle.getParcelable("superState");
 		}
 		super.onRestoreInstanceState(state);
@@ -171,9 +180,19 @@ public class AHBottomNavigation extends FrameLayout {
 	 *
 	 * @param context
 	 */
-	private void init(Context context) {
+	private void init(Context context, AttributeSet attrs) {
 		this.context = context;
 		resources = this.context.getResources();
+
+		if (attrs != null) {
+			TypedArray ta = context.obtainStyledAttributes(attrs, R.styleable.AHBottomNavigationBehavior_Params, 0, 0);
+			try {
+				selectedBackgroundVisible = ta.getBoolean(R.styleable.AHBottomNavigationBehavior_Params_selectedBackgroundVisible, false);
+				translucentNavigationEnabled = ta.getBoolean(R.styleable.AHBottomNavigationBehavior_Params_translucentNavigationEnabled, false);
+			} finally {
+				ta.recycle();
+			}
+		}
 
 		notificationTextColor = ContextCompat.getColor(context, android.R.color.white);
 		bottomNavigationHeight = (int) resources.getDimension(R.dimen.bottom_navigation_height);
@@ -219,21 +238,23 @@ public class AHBottomNavigation extends FrameLayout {
 		backgroundColorView = new View(context);
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
 			LayoutParams backgroundLayoutParams = new LayoutParams(
-					ViewGroup.LayoutParams.MATCH_PARENT, layoutHeight);
+					ViewGroup.LayoutParams.MATCH_PARENT, calculateHeight(layoutHeight));
 			addView(backgroundColorView, backgroundLayoutParams);
+			bottomNavigationHeight = layoutHeight;
 		}
 
-		LinearLayout linearLayout = new LinearLayout(context);
-		linearLayout.setOrientation(LinearLayout.HORIZONTAL);
-		linearLayout.setGravity(Gravity.CENTER);
+		linearLayoutContainer = new LinearLayout(context);
+		linearLayoutContainer.setOrientation(LinearLayout.HORIZONTAL);
+		linearLayoutContainer.setGravity(Gravity.CENTER);
 
 		LayoutParams layoutParams = new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, layoutHeight);
-		addView(linearLayout, layoutParams);
+		addView(linearLayoutContainer, layoutParams);
 
-		if (items.size() == MIN_ITEMS || forceTitlesDisplay) {
-			createClassicItems(linearLayout);
+		if (titleState != TitleState.ALWAYS_HIDE &&
+				(items.size() == MIN_ITEMS || titleState == TitleState.ALWAYS_SHOW)) {
+			createClassicItems(linearLayoutContainer);
 		} else {
-			createSmallItems(linearLayout);
+			createSmallItems(linearLayoutContainer);
 		}
 
 		// Force a request layout after all the items have been created
@@ -244,6 +265,65 @@ public class AHBottomNavigation extends FrameLayout {
 			}
 		});
 	}
+
+	@SuppressLint("NewApi")
+	@TargetApi(Build.VERSION_CODES.LOLLIPOP)
+	private int calculateHeight(int layoutHeight) {
+		if(!translucentNavigationEnabled) return layoutHeight;
+
+		int resourceId = getResources().getIdentifier("navigation_bar_height", "dimen", "android");
+		if (resourceId > 0) {
+			navigationBarHeight = resources.getDimensionPixelSize(resourceId);
+		}
+
+		int[] attrs = {android.R.attr.fitsSystemWindows, android.R.attr.windowTranslucentNavigation};
+		TypedArray typedValue = getContext().getTheme().obtainStyledAttributes(attrs);
+
+		@SuppressWarnings("ResourceType")
+		boolean fitWindow = typedValue.getBoolean(0, false);
+
+		@SuppressWarnings("ResourceType")
+		boolean translucentNavigation = typedValue.getBoolean(1, true);
+
+		if(hasImmersive() /*&& !fitWindow*/ && translucentNavigation) {
+			layoutHeight += navigationBarHeight;
+		}
+
+		typedValue.recycle();
+
+		return layoutHeight;
+	}
+
+	@SuppressLint("NewApi")
+	@TargetApi(Build.VERSION_CODES.LOLLIPOP)
+	public boolean hasImmersive() {
+		Display d = ((WindowManager)getContext().getSystemService(Context.WINDOW_SERVICE)).getDefaultDisplay();
+
+		DisplayMetrics realDisplayMetrics = new DisplayMetrics();
+		d.getRealMetrics(realDisplayMetrics);
+
+		int realHeight = realDisplayMetrics.heightPixels;
+		int realWidth = realDisplayMetrics.widthPixels;
+
+		DisplayMetrics displayMetrics = new DisplayMetrics();
+		d.getMetrics(displayMetrics);
+
+		int displayHeight = displayMetrics.heightPixels;
+		int displayWidth = displayMetrics.widthPixels;
+
+		return (realWidth > displayWidth) || (realHeight > displayHeight);
+	}
+
+	// updated
+
+    /**
+     * Check if items must be classic
+     *
+     * @return true if classic (icon + title)
+     */
+    private boolean isClassic() {
+        return titleState == TitleState.ALWAYS_SHOW || items.size() <= MIN_ITEMS && titleState != TitleState.ALWAYS_SHOW;
+    }
 
 	/**
 	 * Create classic items (only 3 items in the bottom navigation)
@@ -258,7 +338,7 @@ public class AHBottomNavigation extends FrameLayout {
 		float minWidth = resources.getDimension(R.dimen.bottom_navigation_min_width);
 		float maxWidth = resources.getDimension(R.dimen.bottom_navigation_max_width);
 
-		if (forceTitlesDisplay && items.size() > MIN_ITEMS) {
+		if (titleState == TitleState.ALWAYS_SHOW && items.size() > MIN_ITEMS) {
 			minWidth = resources.getDimension(R.dimen.bottom_navigation_small_inactive_min_width);
 			maxWidth = resources.getDimension(R.dimen.bottom_navigation_small_inactive_max_width);
 		}
@@ -282,13 +362,13 @@ public class AHBottomNavigation extends FrameLayout {
 		if (titleActiveTextSize != 0 && titleInactiveTextSize != 0) {
 			activeSize = titleActiveTextSize;
 			inactiveSize = titleInactiveTextSize;
-		} else if (forceTitlesDisplay && items.size() > MIN_ITEMS) {
+		} else if (titleState == TitleState.ALWAYS_SHOW && items.size() > MIN_ITEMS) {
 			activeSize = resources.getDimension(R.dimen.bottom_navigation_text_size_forced_active);
 			inactiveSize = resources.getDimension(R.dimen.bottom_navigation_text_size_forced_inactive);
 		}
 
 		for (int i = 0; i < items.size(); i++) {
-
+			final boolean current = currentItem == i;
 			final int itemIndex = i;
 			AHBottomNavigationItem item = items.get(itemIndex);
 
@@ -305,11 +385,14 @@ public class AHBottomNavigation extends FrameLayout {
 				title.setTypeface(titleTypeface);
 			}
 
-			if (forceTitlesDisplay && items.size() > MIN_ITEMS) {
+			if (titleState == TitleState.ALWAYS_SHOW && items.size() > MIN_ITEMS) {
 				container.setPadding(0, container.getPaddingTop(), 0, container.getPaddingBottom());
 			}
 
-			if (i == currentItem) {
+			if (current) {
+				if (selectedBackgroundVisible) {
+					view.setSelected(true);
+				}
 				icon.setSelected(true);
 				// Update margins (icon & notification)
 				if (view.getLayoutParams() instanceof ViewGroup.MarginLayoutParams) {
@@ -332,29 +415,26 @@ public class AHBottomNavigation extends FrameLayout {
 			}
 
 			if (colored) {
-				if (i == currentItem) {
+				if (current) {
 					setBackgroundColor(item.getColor(context));
 					currentColor = item.getColor(context);
 				}
 			} else {
-				setBackgroundColor(defaultBackgroundColor);
+				if (defaultBackgroundResource != 0) {
+					setBackgroundResource(defaultBackgroundResource);
+				} else {
+					setBackgroundColor(defaultBackgroundColor);
+				}
 			}
 
 			icon.setImageDrawable(AHHelper.getTintDrawable(items.get(i).getDrawable(context),
-					currentItem == i ? itemActiveColor : itemInactiveColor, forceTint));
-			title.setTextColor(currentItem == i ? itemActiveColor : itemInactiveColor);
-			title.setTextSize(TypedValue.COMPLEX_UNIT_PX, currentItem == i ? activeSize : inactiveSize);
+					current ? itemActiveColor : itemInactiveColor, forceTint));
+			title.setTextColor(current ? itemActiveColor : itemInactiveColor);
+			title.setTextSize(TypedValue.COMPLEX_UNIT_PX, current ? activeSize : inactiveSize);
 			view.setOnClickListener(new OnClickListener() {
 				@Override
 				public void onClick(View v) {
-					updateItems(itemIndex, true, true);
-				}
-			});
-			view.setOnLongClickListener(new OnLongClickListener() {
-				@Override
-				public boolean onLongClick(View view) {
-					updateItems(itemIndex, true, false);
-					return true;
+					updateItems(itemIndex, true);
 				}
 			});
 
@@ -410,7 +490,10 @@ public class AHBottomNavigation extends FrameLayout {
 			TextView title = (TextView) view.findViewById(R.id.bottom_navigation_small_item_title);
 			TextView notification = (TextView) view.findViewById(R.id.bottom_navigation_notification);
 			icon.setImageDrawable(item.getDrawable(context));
-			title.setText(item.getTitle(context));
+
+			if (titleState != TitleState.ALWAYS_HIDE) {
+				title.setText(item.getTitle(context));
+			}
 
 			if (titleActiveTextSize != 0) {
 				title.setTextSize(TypedValue.COMPLEX_UNIT_PX, titleActiveTextSize);
@@ -421,18 +504,24 @@ public class AHBottomNavigation extends FrameLayout {
 			}
 
 			if (i == currentItem) {
+				if (selectedBackgroundVisible) {
+					view.setSelected(true);
+				}
 				icon.setSelected(true);
 				// Update margins (icon & notification)
-				if (view.getLayoutParams() instanceof ViewGroup.MarginLayoutParams) {
-					ViewGroup.MarginLayoutParams p = (ViewGroup.MarginLayoutParams) icon.getLayoutParams();
-					p.setMargins(p.leftMargin, activeMarginTop, p.rightMargin, p.bottomMargin);
 
-					ViewGroup.MarginLayoutParams paramsNotification = (ViewGroup.MarginLayoutParams)
-							notification.getLayoutParams();
-					paramsNotification.setMargins(notificationActiveMarginLeft, notificationActiveMarginTop,
-							paramsNotification.rightMargin, paramsNotification.bottomMargin);
+				if (titleState != TitleState.ALWAYS_HIDE) {
+					if (view.getLayoutParams() instanceof ViewGroup.MarginLayoutParams) {
+						ViewGroup.MarginLayoutParams p = (ViewGroup.MarginLayoutParams) icon.getLayoutParams();
+						p.setMargins(p.leftMargin, activeMarginTop, p.rightMargin, p.bottomMargin);
 
-					view.requestLayout();
+						ViewGroup.MarginLayoutParams paramsNotification = (ViewGroup.MarginLayoutParams)
+								notification.getLayoutParams();
+						paramsNotification.setMargins(notificationActiveMarginLeft, notificationActiveMarginTop,
+								paramsNotification.rightMargin, paramsNotification.bottomMargin);
+
+						view.requestLayout();
+					}
 				}
 			} else {
 				icon.setSelected(false);
@@ -448,7 +537,11 @@ public class AHBottomNavigation extends FrameLayout {
 					currentColor = item.getColor(context);
 				}
 			} else {
-				setBackgroundColor(defaultBackgroundColor);
+				if (defaultBackgroundResource != 0) {
+					setBackgroundResource(defaultBackgroundResource);
+				} else {
+					setBackgroundColor(defaultBackgroundColor);
+				}
 			}
 
 			icon.setImageDrawable(AHHelper.getTintDrawable(items.get(i).getDrawable(context),
@@ -458,19 +551,18 @@ public class AHBottomNavigation extends FrameLayout {
 			view.setOnClickListener(new OnClickListener() {
 				@Override
 				public void onClick(View v) {
-					updateSmallItems(itemIndex, true, true);
-				}
-			});
-			view.setOnLongClickListener(new OnLongClickListener() {
-				@Override
-				public boolean onLongClick(View view) {
-					updateSmallItems(itemIndex, true, false);
-					return true;
+					updateSmallItems(itemIndex, true);
 				}
 			});
 
-			LayoutParams params = new LayoutParams(i == currentItem ? (int) selectedItemWidth :
-					(int) itemWidth, (int) height);
+			int width = i == currentItem ? (int) selectedItemWidth :
+					(int) itemWidth;
+
+			if (titleState == TitleState.ALWAYS_HIDE) {
+				width = (int) (itemWidth * 1.16);
+			}
+
+			LayoutParams params = new LayoutParams(width, (int) height);
 			linearLayout.addView(view, params);
 			views.add(view);
 		}
@@ -484,28 +576,18 @@ public class AHBottomNavigation extends FrameLayout {
 	 *
 	 * @param itemIndex   int: Selected item position
 	 * @param useCallback boolean: Use or not the callback
-	 * @param singleTap boolean: True to handle single tap, false to handle long tap
 	 */
-	private void updateItems(final int itemIndex, boolean useCallback, boolean singleTap) {
+	private void updateItems(final int itemIndex, boolean useCallback) {
 
 		if (currentItem == itemIndex) {
 			if (tabSelectedListener != null && useCallback) {
-				if (singleTap) {
-					tabSelectedListener.onTabSelected(itemIndex, true);
-				} else {
-					tabSelectedListener.onLongTabSelected(itemIndex, true);
-				}
+				tabSelectedListener.onTabSelected(itemIndex, true);
 			}
 			return;
 		}
 
 		if (tabSelectedListener != null && useCallback) {
-			boolean selectionAllowed;
-			if (singleTap) {
-				selectionAllowed = tabSelectedListener.onTabSelected(itemIndex, false);
-			} else {
-				selectionAllowed = tabSelectedListener.onLongTabSelected(itemIndex, false);
-			}
+			boolean selectionAllowed = tabSelectedListener.onTabSelected(itemIndex, false);
 			if (!selectionAllowed) return;
 		}
 
@@ -517,18 +599,23 @@ public class AHBottomNavigation extends FrameLayout {
 		if (titleActiveTextSize != 0 && titleInactiveTextSize != 0) {
 			activeSize = titleActiveTextSize;
 			inactiveSize = titleInactiveTextSize;
-		} else if (forceTitlesDisplay && items.size() > MIN_ITEMS) {
+		} else if (titleState == TitleState.ALWAYS_SHOW && items.size() > MIN_ITEMS) {
 			activeSize = resources.getDimension(R.dimen.bottom_navigation_text_size_forced_active);
 			inactiveSize = resources.getDimension(R.dimen.bottom_navigation_text_size_forced_inactive);
 		}
 
 		for (int i = 0; i < views.size(); i++) {
 
+			final View view = views.get(i);
+			if (selectedBackgroundVisible) {
+				view.setSelected(i == itemIndex);
+			}
+
 			if (i == itemIndex) {
 
-				final TextView title = (TextView) views.get(itemIndex).findViewById(R.id.bottom_navigation_item_title);
-				final ImageView icon = (ImageView) views.get(itemIndex).findViewById(R.id.bottom_navigation_item_icon);
-				final TextView notification = (TextView) views.get(itemIndex).findViewById(R.id.bottom_navigation_notification);
+				final TextView title = (TextView) view.findViewById(R.id.bottom_navigation_item_title);
+				final ImageView icon = (ImageView) view.findViewById(R.id.bottom_navigation_item_icon);
+				final TextView notification = (TextView) view.findViewById(R.id.bottom_navigation_notification);
 
 				icon.setSelected(true);
 				AHHelper.updateTopMargin(icon, inactiveMarginTop, activeMarginTop);
@@ -541,8 +628,8 @@ public class AHBottomNavigation extends FrameLayout {
 				if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP && colored) {
 
 					int finalRadius = Math.max(getWidth(), getHeight());
-					int cx = (int) views.get(itemIndex).getX() + views.get(itemIndex).getWidth() / 2;
-					int cy = views.get(itemIndex).getHeight() / 2;
+					int cx = (int) view.getX() + view.getWidth() / 2;
+					int cy = view.getHeight() / 2;
 
 					if (circleRevealAnim != null && circleRevealAnim.isRunning()) {
 						circleRevealAnim.cancel();
@@ -577,15 +664,19 @@ public class AHBottomNavigation extends FrameLayout {
 					AHHelper.updateViewBackgroundColor(this, currentColor,
 							items.get(itemIndex).getColor(context));
 				} else {
-					setBackgroundColor(defaultBackgroundColor);
+					if (defaultBackgroundResource != 0) {
+						setBackgroundResource(defaultBackgroundResource);
+					} else {
+						setBackgroundColor(defaultBackgroundColor);
+					}
 					backgroundColorView.setBackgroundColor(Color.TRANSPARENT);
 				}
 
 			} else if (i == currentItem) {
 
-				final TextView title = (TextView) views.get(currentItem).findViewById(R.id.bottom_navigation_item_title);
-				final ImageView icon = (ImageView) views.get(currentItem).findViewById(R.id.bottom_navigation_item_icon);
-				final TextView notification = (TextView) views.get(currentItem).findViewById(R.id.bottom_navigation_notification);
+				final TextView title = (TextView) view.findViewById(R.id.bottom_navigation_item_title);
+				final ImageView icon = (ImageView) view.findViewById(R.id.bottom_navigation_item_icon);
+				final TextView notification = (TextView) view.findViewById(R.id.bottom_navigation_notification);
 
 				icon.setSelected(false);
 				AHHelper.updateTopMargin(icon, activeMarginTop, inactiveMarginTop);
@@ -601,15 +692,13 @@ public class AHBottomNavigation extends FrameLayout {
 		if (currentItem > 0 && currentItem < items.size()) {
 			currentColor = items.get(currentItem).getColor(context);
 		} else if (currentItem == CURRENT_ITEM_NONE) {
-			setBackgroundColor(defaultBackgroundColor);
+			if (defaultBackgroundResource != 0) {
+				setBackgroundResource(defaultBackgroundResource);
+			} else {
+				setBackgroundColor(defaultBackgroundColor);
+			}
 			backgroundColorView.setBackgroundColor(Color.TRANSPARENT);
 		}
-
-		/*
-		if (tabSelectedListener != null && useCallback) {
-			tabSelectedListener.onTabSelected(itemIndex, false);
-		}
-		*/
 	}
 
 	/**
@@ -617,28 +706,18 @@ public class AHBottomNavigation extends FrameLayout {
 	 *
 	 * @param itemIndex   int: Selected item position
 	 * @param useCallback boolean: Use or not the callback
-	 * @param singleTap boolean: True to handle single tap, false to handle long tap
 	 */
-	private void updateSmallItems(final int itemIndex, boolean useCallback, boolean singleTap) {
+	private void updateSmallItems(final int itemIndex, boolean useCallback) {
 
 		if (currentItem == itemIndex) {
 			if (tabSelectedListener != null && useCallback) {
-				if (singleTap) {
-					tabSelectedListener.onTabSelected(itemIndex, true);
-				} else {
-					tabSelectedListener.onLongTabSelected(itemIndex, true);
-				}
+				tabSelectedListener.onTabSelected(itemIndex, true);
 			}
 			return;
 		}
 
 		if (tabSelectedListener != null && useCallback) {
-			boolean selectionAllowed;
-			if (singleTap) {
-				selectionAllowed = tabSelectedListener.onTabSelected(itemIndex, false);
-			} else {
-				selectionAllowed = tabSelectedListener.onLongTabSelected(itemIndex, false);
-			}
+			boolean selectionAllowed = tabSelectedListener.onTabSelected(itemIndex, false);
 			if (!selectionAllowed) return;
 		}
 
@@ -647,20 +726,29 @@ public class AHBottomNavigation extends FrameLayout {
 
 		for (int i = 0; i < views.size(); i++) {
 
+			final View view = views.get(i);
+			if (selectedBackgroundVisible) {
+				view.setSelected(i == itemIndex);
+			}
+
 			if (i == itemIndex) {
 
-				final FrameLayout container = (FrameLayout) views.get(itemIndex).findViewById(R.id.bottom_navigation_small_container);
-				final TextView title = (TextView) views.get(itemIndex).findViewById(R.id.bottom_navigation_small_item_title);
-				final ImageView icon = (ImageView) views.get(itemIndex).findViewById(R.id.bottom_navigation_small_item_icon);
-				final TextView notification = (TextView) views.get(itemIndex).findViewById(R.id.bottom_navigation_notification);
+				final FrameLayout container = (FrameLayout) view.findViewById(R.id.bottom_navigation_small_container);
+				final TextView title = (TextView) view.findViewById(R.id.bottom_navigation_small_item_title);
+				final ImageView icon = (ImageView) view.findViewById(R.id.bottom_navigation_small_item_icon);
+				final TextView notification = (TextView) view.findViewById(R.id.bottom_navigation_notification);
 
 				icon.setSelected(true);
-				AHHelper.updateTopMargin(icon, inactiveMargin, activeMarginTop);
-				AHHelper.updateLeftMargin(notification, notificationInactiveMarginLeft, notificationActiveMarginLeft);
-				AHHelper.updateTopMargin(notification, notificationInactiveMarginTop, notificationActiveMarginTop);
-				AHHelper.updateTextColor(title, itemInactiveColor, itemActiveColor);
+
+				if (titleState != TitleState.ALWAYS_HIDE) {
+					AHHelper.updateTopMargin(icon, inactiveMargin, activeMarginTop);
+					AHHelper.updateLeftMargin(notification, notificationInactiveMarginLeft, notificationActiveMarginLeft);
+					AHHelper.updateTopMargin(notification, notificationInactiveMarginTop, notificationActiveMarginTop);
+					AHHelper.updateTextColor(title, itemInactiveColor, itemActiveColor);
+					AHHelper.updateWidth(container, notSelectedItemWidth, selectedItemWidth);
+				}
+
 				AHHelper.updateAlpha(title, 0, 1);
-				AHHelper.updateWidth(container, notSelectedItemWidth, selectedItemWidth);
 				AHHelper.updateDrawableColor(context, items.get(itemIndex).getDrawable(context), icon,
 						itemInactiveColor, itemActiveColor, forceTint);
 
@@ -702,27 +790,34 @@ public class AHBottomNavigation extends FrameLayout {
 					AHHelper.updateViewBackgroundColor(this, currentColor,
 							items.get(itemIndex).getColor(context));
 				} else {
-					setBackgroundColor(defaultBackgroundColor);
+					if (defaultBackgroundResource != 0) {
+						setBackgroundResource(defaultBackgroundResource);
+					} else {
+						setBackgroundColor(defaultBackgroundColor);
+					}
 					backgroundColorView.setBackgroundColor(Color.TRANSPARENT);
 				}
 
 			} else if (i == currentItem) {
 
-				final View container = views.get(currentItem).findViewById(R.id.bottom_navigation_small_container);
-				final TextView title = (TextView) views.get(currentItem).findViewById(R.id.bottom_navigation_small_item_title);
-				final ImageView icon = (ImageView) views.get(currentItem).findViewById(R.id.bottom_navigation_small_item_icon);
-				final TextView notification = (TextView) views.get(currentItem).findViewById(R.id.bottom_navigation_notification);
+				final View container = view.findViewById(R.id.bottom_navigation_small_container);
+				final TextView title = (TextView) view.findViewById(R.id.bottom_navigation_small_item_title);
+				final ImageView icon = (ImageView) view.findViewById(R.id.bottom_navigation_small_item_icon);
+				final TextView notification = (TextView) view.findViewById(R.id.bottom_navigation_notification);
 
 				icon.setSelected(false);
-				AHHelper.updateTopMargin(icon, activeMarginTop, inactiveMargin);
-				AHHelper.updateLeftMargin(notification, notificationActiveMarginLeft, notificationInactiveMarginLeft);
-				AHHelper.updateTopMargin(notification, notificationActiveMarginTop, notificationInactiveMarginTop);
-				AHHelper.updateTextColor(title, itemActiveColor, itemInactiveColor);
+
+				if (titleState != TitleState.ALWAYS_HIDE) {
+					AHHelper.updateTopMargin(icon, activeMarginTop, inactiveMargin);
+					AHHelper.updateLeftMargin(notification, notificationActiveMarginLeft, notificationInactiveMarginLeft);
+					AHHelper.updateTopMargin(notification, notificationActiveMarginTop, notificationInactiveMarginTop);
+					AHHelper.updateTextColor(title, itemActiveColor, itemInactiveColor);
+					AHHelper.updateWidth(container, selectedItemWidth, notSelectedItemWidth);
+				}
+
 				AHHelper.updateAlpha(title, 1, 0);
-				AHHelper.updateWidth(container, selectedItemWidth, notSelectedItemWidth);
 				AHHelper.updateDrawableColor(context, items.get(currentItem).getDrawable(context), icon,
 						itemActiveColor, itemInactiveColor, forceTint);
-
 			}
 		}
 
@@ -730,15 +825,13 @@ public class AHBottomNavigation extends FrameLayout {
 		if (currentItem > 0 && currentItem < items.size()) {
 			currentColor = items.get(currentItem).getColor(context);
 		} else if (currentItem == CURRENT_ITEM_NONE) {
-			setBackgroundColor(defaultBackgroundColor);
+			if (defaultBackgroundResource != 0) {
+				setBackgroundResource(defaultBackgroundResource);
+			} else {
+				setBackgroundColor(defaultBackgroundColor);
+			}
 			backgroundColorView.setBackgroundColor(Color.TRANSPARENT);
 		}
-
-		/*
-		if (tabSelectedListener != null && useCallback) {
-			tabSelectedListener.onTabSelected(itemIndex, false);
-		}
-		*/
 	}
 
 	/**
@@ -752,13 +845,17 @@ public class AHBottomNavigation extends FrameLayout {
 				continue;
 			}
 
+			final AHNotification notificationItem = notifications.get(i);
+			final int currentTextColor = AHNotificationHelper.getTextColor(notificationItem, notificationTextColor);
+			final int currentBackgroundColor = AHNotificationHelper.getBackgroundColor(notificationItem, notificationBackgroundColor);
+
 			TextView notification = (TextView) views.get(i).findViewById(R.id.bottom_navigation_notification);
 
 			String currentValue = notification.getText().toString();
-			boolean animate = !currentValue.equals(String.valueOf(notifications[i]));
+			boolean animate = !currentValue.equals(String.valueOf(notificationItem.getText()));
 
 			if (updateStyle) {
-				notification.setTextColor(notificationTextColor);
+				notification.setTextColor(currentTextColor);
 				if (notificationTypeface != null) {
 					notification.setTypeface(notificationTypeface);
 				} else {
@@ -773,19 +870,19 @@ public class AHBottomNavigation extends FrameLayout {
 						notification.setBackgroundDrawable(notificationBackgroundDrawable);
 					}
 
-				} else if (notificationBackgroundColor != 0) {
+				} else if (currentBackgroundColor != 0) {
 					Drawable defautlDrawable = ContextCompat.getDrawable(context, R.drawable.notification_background);
 					if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
 						notification.setBackground(AHHelper.getTintDrawable(defautlDrawable,
-								notificationBackgroundColor, forceTint));
+								currentBackgroundColor, forceTint));
 					} else {
 						notification.setBackgroundDrawable(AHHelper.getTintDrawable(defautlDrawable,
-								notificationBackgroundColor, forceTint));
+								currentBackgroundColor, forceTint));
 					}
 				}
 			}
 
-			if (notifications[i].length() == 0 && notification.getText().length() > 0) {
+			if (notificationItem.isEmpty() && notification.getText().length() > 0) {
 				notification.setText("");
 				if (animate) {
 					notification.animate()
@@ -796,8 +893,8 @@ public class AHBottomNavigation extends FrameLayout {
 							.setDuration(150)
 							.start();
 				}
-			} else if (notifications[i].length() > 0) {
-				notification.setText(String.valueOf(notifications[i]));
+			} else if (!notificationItem.isEmpty()) {
+				notification.setText(String.valueOf(notificationItem.getText()));
 				if (animate) {
 					notification.setScaleX(0);
 					notification.setScaleY(0);
@@ -911,6 +1008,16 @@ public class AHBottomNavigation extends FrameLayout {
 	}
 
 	/**
+	 * Set the bottom navigation background resource
+	 *
+	 * @param defaultBackgroundResource The bottom navigation background resource
+	 */
+	public void setDefaultBackgroundResource(@DrawableRes int defaultBackgroundResource) {
+		this.defaultBackgroundResource = defaultBackgroundResource;
+		createItems();
+	}
+
+	/**
 	 * Get the accent color (used when the view contains 3 items)
 	 *
 	 * @return The default accent color
@@ -959,6 +1066,14 @@ public class AHBottomNavigation extends FrameLayout {
 	public void setColoredModeColors(@ColorInt int colorActive, @ColorInt int colorInactive) {
 		this.coloredTitleColorActive = colorActive;
 		this.coloredTitleColorInactive = colorInactive;
+		createItems();
+	}
+
+	/**
+	 * Set selected background visibility
+     */
+	public void setSelectedBackgroundVisible(boolean visible) {
+		this.selectedBackgroundVisible = visible;
 		createItems();
 	}
 
@@ -1027,10 +1142,11 @@ public class AHBottomNavigation extends FrameLayout {
 			return;
 		}
 
-		if (items.size() == MIN_ITEMS || forceTitlesDisplay) {
-			updateItems(position, useCallback, true);
+		if (titleState != TitleState.ALWAYS_HIDE &&
+				(items.size() == MIN_ITEMS || titleState == TitleState.ALWAYS_SHOW)) {
+			updateItems(position, useCallback);
 		} else {
-			updateSmallItems(position, useCallback, true);
+			updateSmallItems(position, useCallback);
 		}
 	}
 
@@ -1053,9 +1169,9 @@ public class AHBottomNavigation extends FrameLayout {
 		if (getParent() instanceof CoordinatorLayout) {
 			ViewGroup.LayoutParams params = getLayoutParams();
 			if (bottomNavigationBehavior == null) {
-				bottomNavigationBehavior = new AHBottomNavigationBehavior<>(behaviorTranslationEnabled);
+				bottomNavigationBehavior = new AHBottomNavigationBehavior<>(behaviorTranslationEnabled, navigationBarHeight);
 			} else {
-				bottomNavigationBehavior.setBehaviorTranslationEnabled(behaviorTranslationEnabled);
+				bottomNavigationBehavior.setBehaviorTranslationEnabled(behaviorTranslationEnabled, navigationBarHeight);
 			}
 			if (navigationPositionListener != null) {
 				bottomNavigationBehavior.setOnNavigationPositionListener(navigationPositionListener);
@@ -1064,7 +1180,20 @@ public class AHBottomNavigation extends FrameLayout {
 			if (needHideBottomNavigation) {
 				needHideBottomNavigation = false;
 				bottomNavigationBehavior.hideView(this, bottomNavigationHeight, hideBottomNavigationWithAnimation);
+				isHidden = true;
 			}
+		}
+	}
+
+	/**
+	 * Manage the floating action button behavior with AHBottomNavigation
+	 * @param fab Floating Action Button
+	 */
+	public void manageFloatingActionButtonBehavior(FloatingActionButton fab) {
+		if (fab.getParent() instanceof CoordinatorLayout) {
+			AHBottomNavigationFABBehavior fabBehavior = new AHBottomNavigationFABBehavior(navigationBarHeight);
+			((CoordinatorLayout.LayoutParams) fab.getLayoutParams())
+					.setBehavior(fabBehavior);
 		}
 	}
 
@@ -1081,6 +1210,7 @@ public class AHBottomNavigation extends FrameLayout {
 	 * @param withAnimation Boolean
 	 */
 	public void hideBottomNavigation(boolean withAnimation) {
+		isHidden = true;
 		if (bottomNavigationBehavior != null) {
 			bottomNavigationBehavior.hideView(this, bottomNavigationHeight, withAnimation);
 		} else if (getParent() instanceof CoordinatorLayout) {
@@ -1109,6 +1239,7 @@ public class AHBottomNavigation extends FrameLayout {
 	 * @param withAnimation Boolean
 	 */
 	public void restoreBottomNavigation(boolean withAnimation) {
+		isHidden = false;
 		if (bottomNavigationBehavior != null) {
 			bottomNavigationBehavior.resetOffset(this, withAnimation);
 		} else {
@@ -1119,6 +1250,20 @@ public class AHBottomNavigation extends FrameLayout {
 					.setDuration(withAnimation ? 300 : 0)
 					.start();
 		}
+	}
+
+	/**
+	 * Return if the translucent navigation is enabled
+	 */
+	public boolean isTranslucentNavigationEnabled() {
+		return translucentNavigationEnabled;
+	}
+
+	/**
+	 * Set the translucent navigation value
+	 */
+	public void setTranslucentNavigationEnabled(boolean translucentNavigationEnabled) {
+		this.translucentNavigationEnabled = translucentNavigationEnabled;
 	}
 
 	/**
@@ -1142,22 +1287,25 @@ public class AHBottomNavigation extends FrameLayout {
 	}
 
 	/**
-	 * Return if we force the titles to be displayed
+	 * Return the title state for display
 	 *
-	 * @return Boolean
+	 * @return TitleState
 	 */
-	public boolean isForceTitlesDisplay() {
-		return forceTitlesDisplay;
+	public TitleState getTitleState() {
+		return titleState;
 	}
 
 	/**
-	 * Force the titles to be displayed (or used the classic behavior)
-	 * Note: Against Material Design guidelines
+	 * Sets the title state for each tab
+	 * SHOW_WHEN_ACTIVE: when a tab is focused
+	 * ALWAYS_SHOW: show regardless of which tab is in focus
+	 * ALWAYS_HIDE: never show tab titles
+	 * Note: Always showing the title is against Material Design guidelines
 	 *
-	 * @param forceTitlesDisplay Boolean
+	 * @param titleState TitleState
 	 */
-	public void setForceTitlesDisplay(boolean forceTitlesDisplay) {
-		this.forceTitlesDisplay = forceTitlesDisplay;
+	public void setTitleState(TitleState titleState) {
+		this.titleState = titleState;
 		createItems();
 	}
 
@@ -1204,22 +1352,42 @@ public class AHBottomNavigation extends FrameLayout {
 	@Deprecated
 	public void setNotification(int nbNotification, int itemPosition) {
 		if (itemPosition < 0 || itemPosition > items.size() - 1) {
-			Log.w(TAG, "The position is out of bounds of the items (" + items.size() + " elements)");
-			return;
+            throw new IndexOutOfBoundsException(String.format(Locale.US, EXCEPTION_INDEX_OUT_OF_BOUNDS, itemPosition, items.size()));
 		}
-		notifications[itemPosition] = nbNotification == 0 ? "" : String.valueOf(nbNotification);
+        final String title = nbNotification == 0 ? "" : String.valueOf(nbNotification);
+        notifications.set(itemPosition, AHNotification.justText(title));
 		updateNotifications(false, itemPosition);
 	}
 
 	/**
-	 * Set Notification content
+	 * Set notification text
 	 *
 	 * @param title        String
 	 * @param itemPosition int
 	 */
 	public void setNotification(String title, int itemPosition) {
-		notifications[itemPosition] = title;
-		updateNotifications(false, itemPosition);
+        if (itemPosition < 0 || itemPosition > items.size() - 1) {
+            throw new IndexOutOfBoundsException(String.format(Locale.US, EXCEPTION_INDEX_OUT_OF_BOUNDS, itemPosition, items.size()));
+        }
+        notifications.set(itemPosition, AHNotification.justText(title));
+        updateNotifications(false, itemPosition);
+    }
+
+    /**
+     * Set fully customized Notification
+     *
+     * @param notification AHNotification
+     * @param itemPosition int
+     */
+	public void setNotification(AHNotification notification, int itemPosition) {
+		if (itemPosition < 0 || itemPosition > items.size() - 1) {
+            throw new IndexOutOfBoundsException(String.format(Locale.US, EXCEPTION_INDEX_OUT_OF_BOUNDS, itemPosition, items.size()));
+		}
+        if (notification == null) {
+            notification = new AHNotification(); // instead of null, use empty notification
+        }
+		notifications.set(itemPosition, notification);
+		updateNotifications(true, itemPosition);
 	}
 
 	/**
@@ -1316,6 +1484,26 @@ public class AHBottomNavigation extends FrameLayout {
 		setClipToPadding(false);
 	}
 
+	/**
+	 * Return if the Bottom Navigation is hidden or not
+	 */
+	public boolean isHidden() {
+		return isHidden;
+	}
+
+	/**
+	 * Get the view at the given position
+	 * @param position int
+	 * @return The view at the position, or null
+	 */
+	public View getViewAtPosition(int position) {
+		if (linearLayoutContainer != null && position >= 0
+				&& position < linearLayoutContainer.getChildCount()) {
+			return linearLayoutContainer.getChildAt(position);
+		}
+		return null;
+	}
+
 	////////////////
 	// INTERFACES //
 	////////////////
@@ -1332,15 +1520,6 @@ public class AHBottomNavigation extends FrameLayout {
 		 * @return boolean: true for updating the tab UI, false otherwise
 		 */
 		boolean onTabSelected(int position, boolean wasSelected);
-
-		/**
-		 * Called when a long tab has been done.
-		 *
-		 * @param position    int: Position of the long selected tab
-		 * @param wasSelected boolean: true if the tab was already selected
-		 * @return boolean: true for updating the tab UI, false otherwise
-		 */
-		boolean onLongTabSelected(int position, boolean wasSelected);
 	}
 
 	public interface OnNavigationPositionListener {

@@ -1,7 +1,8 @@
 package com.aurelhubert.ahbottomnavigation.demo;
 
 import android.animation.Animator;
-import android.graphics.Color;
+import android.content.Context;
+import android.content.Intent;
 import android.os.Bundle;
 import android.os.Handler;
 import android.support.design.widget.FloatingActionButton;
@@ -9,18 +10,16 @@ import android.support.design.widget.Snackbar;
 import android.support.v4.content.ContextCompat;
 import android.support.v4.view.animation.LinearOutSlowInInterpolator;
 import android.support.v7.app.AppCompatActivity;
-import android.util.Log;
 import android.view.View;
 import android.view.animation.OvershootInterpolator;
-import android.widget.Toast;
 
 import com.aurelhubert.ahbottomnavigation.AHBottomNavigation;
 import com.aurelhubert.ahbottomnavigation.AHBottomNavigationAdapter;
 import com.aurelhubert.ahbottomnavigation.AHBottomNavigationItem;
 import com.aurelhubert.ahbottomnavigation.AHBottomNavigationViewPager;
+import com.aurelhubert.ahbottomnavigation.notification.AHNotification;
 
 import java.util.ArrayList;
-import java.util.Locale;
 
 public class DemoActivity extends AppCompatActivity {
 
@@ -30,6 +29,7 @@ public class DemoActivity extends AppCompatActivity {
 	private ArrayList<AHBottomNavigationItem> bottomNavigationItems = new ArrayList<>();
 	private boolean useMenuResource = true;
 	private int[] tabColors;
+	private Handler handler = new Handler();
 
 	// UI
 	private AHBottomNavigationViewPager viewPager;
@@ -39,8 +39,17 @@ public class DemoActivity extends AppCompatActivity {
 	@Override
 	protected void onCreate(Bundle savedInstanceState) {
 		super.onCreate(savedInstanceState);
+		boolean enabledTranslucentNavigation = getSharedPreferences("shared", Context.MODE_PRIVATE)
+				.getBoolean("translucentNavigation", false);
+		setTheme(enabledTranslucentNavigation ? R.style.AppTheme_TranslucentNavigation : R.style.AppTheme);
 		setContentView(R.layout.activity_home);
 		initUI();
+	}
+
+	@Override
+	protected void onDestroy() {
+		super.onDestroy();
+		handler.removeCallbacksAndMessages(null);
 	}
 
 	/**
@@ -68,8 +77,8 @@ public class DemoActivity extends AppCompatActivity {
 			bottomNavigation.addItems(bottomNavigationItems);
 		}
 
-		bottomNavigation.setAccentColor(Color.parseColor("#F63D2B"));
-		bottomNavigation.setInactiveColor(Color.parseColor("#747474"));
+		bottomNavigation.manageFloatingActionButtonBehavior(floatingActionButton);
+		bottomNavigation.setTranslucentNavigationEnabled(true);
 
 		bottomNavigation.setOnTabSelectedListener(new AHBottomNavigation.OnTabSelectedListener() {
 			@Override
@@ -165,20 +174,15 @@ public class DemoActivity extends AppCompatActivity {
 
 				return true;
 			}
-
-			@Override
-			public boolean onLongTabSelected(int position, boolean wasSelected) {
-				String text = String.format(Locale.ENGLISH, "Item at position %d has long tapped!", position);
-				Toast.makeText(DemoActivity.this, text, Toast.LENGTH_SHORT).show();
-				return false;
-			}
 		});
 
+		/*
 		bottomNavigation.setOnNavigationPositionListener(new AHBottomNavigation.OnNavigationPositionListener() {
 			@Override public void onPositionChange(int y) {
 				Log.d("DemoActivity", "BottomNavigation Position: " + y);
 			}
 		});
+		*/
 
 		viewPager.setOffscreenPageLimit(4);
 		adapter = new DemoViewPagerAdapter(getSupportFragmentManager());
@@ -186,15 +190,23 @@ public class DemoActivity extends AppCompatActivity {
 
 		currentFragment = adapter.getCurrentFragment();
 
-		final Handler handler = new Handler();
 		handler.postDelayed(new Runnable() {
 			@Override
 			public void run() {
-				bottomNavigation.setNotification("16", 1);
+				// Setting custom colors for notification
+				AHNotification notification = new AHNotification.Builder()
+						.setText(":)")
+						.setBackgroundColor(ContextCompat.getColor(DemoActivity.this, R.color.color_notification_back))
+						.setTextColor(ContextCompat.getColor(DemoActivity.this, R.color.color_notification_text))
+						.build();
+				bottomNavigation.setNotification(notification, 1);
 				Snackbar.make(bottomNavigation, "Snackbar with bottom navigation",
 						Snackbar.LENGTH_SHORT).show();
+
 			}
 		}, 3000);
+
+		//bottomNavigation.setDefaultBackgroundResource(R.drawable.bottom_navigation_background);
 	}
 
 	/**
@@ -225,23 +237,23 @@ public class DemoActivity extends AppCompatActivity {
 				navigationAdapter = new AHBottomNavigationAdapter(this, R.menu.bottom_navigation_menu_3);
 				navigationAdapter.setupWithBottomNavigation(bottomNavigation, tabColors);
 			}
-			return;
-		}
 
-		AHBottomNavigationItem item4 = new AHBottomNavigationItem(getString(R.string.tab_4),
-				ContextCompat.getDrawable(this, R.drawable.ic_maps_local_bar),
-				ContextCompat.getColor(this, R.color.color_tab_4));
-		AHBottomNavigationItem item5 = new AHBottomNavigationItem(getString(R.string.tab_5),
-				ContextCompat.getDrawable(this, R.drawable.ic_maps_place),
-				ContextCompat.getColor(this, R.color.color_tab_5));
-
-		if (addItems) {
-			bottomNavigation.addItem(item4);
-			bottomNavigation.addItem(item5);
-			bottomNavigation.setNotification("1", 3);
 		} else {
-			bottomNavigation.removeAllItems();
-			bottomNavigation.addItems(bottomNavigationItems);
+			if (addItems) {
+				AHBottomNavigationItem item4 = new AHBottomNavigationItem(getString(R.string.tab_4),
+						ContextCompat.getDrawable(this, R.drawable.ic_maps_local_bar),
+						ContextCompat.getColor(this, R.color.color_tab_4));
+				AHBottomNavigationItem item5 = new AHBottomNavigationItem(getString(R.string.tab_5),
+						ContextCompat.getDrawable(this, R.drawable.ic_maps_place),
+						ContextCompat.getColor(this, R.color.color_tab_5));
+
+				bottomNavigation.addItem(item4);
+				bottomNavigation.addItem(item5);
+				bottomNavigation.setNotification("1", 3);
+			} else {
+				bottomNavigation.removeAllItems();
+				bottomNavigation.addItems(bottomNavigationItems);
+			}
 		}
 	}
 
@@ -254,6 +266,29 @@ public class DemoActivity extends AppCompatActivity {
 		} else {
 			bottomNavigation.hideBottomNavigation(true);
 		}
+	}
+
+	/**
+	 * Show or hide selected item background
+	 */
+	public void updateSelectedBackgroundVisibility(boolean isVisible) {
+		bottomNavigation.setSelectedBackgroundVisible(isVisible);
+	}
+
+	/**
+	 * Show or hide selected item background
+	 */
+	public void setForceTitleHide(boolean forceTitleHide) {
+		AHBottomNavigation.TitleState state = forceTitleHide ? AHBottomNavigation.TitleState.ALWAYS_HIDE : AHBottomNavigation.TitleState.ALWAYS_SHOW;
+		bottomNavigation.setTitleState(state);
+	}
+
+	/**
+	 * Reload activity
+	 */
+	public void reload() {
+		startActivity(new Intent(this, DemoActivity.class));
+		finish();
 	}
 
 	/**
